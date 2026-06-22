@@ -7,7 +7,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # =========================================================
-# 1. 之前的高级特征工程函数 (保持不变)
+# 1. 高级特征工程函数 (保持不变)
 # =========================================================
 def extract_and_clean_features(df):
     df = df.copy()
@@ -35,36 +35,27 @@ def extract_and_clean_features(df):
     return df
 
 # =========================================================
-# 2. 准备全局数据 (已修改为 train.csv 和 hour.csv 双文件读取)
+# 2. 准备全局数据
 # =========================================================
-print("正在分别读取并清洗训练集(train.csv)和验证集(hour.csv)...")
+print("正在读取并清洗数据...")
+df = pd.read_csv("train.csv")
+df = extract_and_clean_features(df)
 
-# 读取数据
-train_df = pd.read_csv("train.csv")
-valid_df = pd.read_csv("hour.csv")
+y = df['cnt']
+# 原本的代码中有 casual 和 registered，如果你的数据里没有，ignore 也不会报错，这里为了干净直接去掉它们
+X = df.drop(columns=['cnt', 'ID', 'dteday'], errors='ignore')
 
-# 分别应用特征工程
-train_df = extract_and_clean_features(train_df)
-valid_df = extract_and_clean_features(valid_df)
-
-# 分离目标变量和特征
-y_train = train_df['cnt']
-X_train = train_df.drop(columns=['cnt', 'casual', 'registered', 'ID', 'dteday'], errors='ignore')
-
-y_valid = valid_df['cnt']
-X_valid = valid_df.drop(columns=['cnt', 'casual', 'registered', 'ID', 'dteday'], errors='ignore')
-
-# 分类特征处理：确保训练集和验证集的类别列都是整数类型
 cat_features = ['season', 'yr', 'mnth', 'hr', 'holiday', 'weekday', 'workingday', 
                 'weathersit', 'is_weekend', 'is_morning_peak', 'is_evening_peak']
-
 for col in cat_features:
-    if col in X_train.columns:
-        X_train[col] = X_train[col].astype(int)
-    if col in X_valid.columns:
-        X_valid[col] = X_valid[col].astype(int)
+    if col in X.columns:
+        X[col] = X[col].astype(int)
 
-# 对目标变量取对数 (为了评估和训练更稳定)
+# 严格按时间顺序切分 (80% 训练，20% 验证)
+split_idx = int(len(X) * 0.8)
+X_train, X_valid = X.iloc[:split_idx], X.iloc[split_idx:]
+y_train, y_valid = y.iloc[:split_idx], y.iloc[split_idx:]
+
 y_train_log = np.log1p(y_train)
 y_valid_log = np.log1p(y_valid)
 
@@ -72,9 +63,6 @@ y_valid_log = np.log1p(y_valid)
 # 3. 🎯 核心：定义 Optuna 自动优化的目标函数
 # =========================================================
 def objective(trial):
-    """
-    Optuna 会在设定的范围内，自动给你推荐一组参数 (trial)
-    """
     params = {
         'iterations': trial.suggest_int('iterations', 2000, 5000), 
         'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1, log=True),
@@ -89,16 +77,18 @@ def objective(trial):
         'verbose': False
     }
     
-    # 用这组随机生成的参数建立模型
     model = CatBoostRegressor(**params)
     
-    # 训练模型 (使用独立提取的验证集)
     model.fit(
         X_train, y_train_log, 
         cat_features=cat_features, 
         eval_set=(X_valid, y_valid_log),
         use_best_model=True
     )
+    
+    # 🌟【修复点】：获取早停触发时，模型真正觉得最好的迭代轮数，并告诉 Optuna
+    actual_best_iteration = model.get_best_iteration()
+    trial.set_user_attr("actual_best_iter", actual_best_iteration)
     
     # 预测并还原
     y_pred_log = model.predict(X_valid)
@@ -107,8 +97,6 @@ def objective(trial):
     
     # 计算真实 MSE
     mse = mean_squared_error(y_valid, y_pred_final)
-    
-    # 把 MSE 交给 Optuna
     return mse
 
 # =========================================================
@@ -124,9 +112,19 @@ if __name__ == "__main__":
     print("\n" + "=" * 50)
     print("🏆 自动化调参结束！")
     print("=" * 50)
-    print(f"🥇 验证集(hour.csv)取得的最低 MSE: {study.best_value:.2f}")
-    print(f"🥇 验证集(hour.csv)取得的最低 RMSE: {np.sqrt(study.best_value):.2f} 辆")
+    
+    best_trial = study.best_trial
+    # 🌟 提取我们刚刚保存的真实迭代次数
+    real_iterations = best_trial.user_attrs["actual_best_iter"]
+    
+    print(f"🥇 验证集取得的最低 MSE: {study.best_value:.2f}")
+    print(f"🥇 验证集取得的最低 RMSE: {np.sqrt(study.best_value):.2f} 辆")
     print("\n💡 你应该直接抄作业的【完美参数组合】是：")
-    for key, value in study.best_params.items():
-        print(f"    '{key}': {value},")
+    
+    # 过滤掉原本虚高的 iterations，换成真实的
+    for key, value in best_trial.params.items():
+        if key != 'iterations':
+            print(f"    '{key}': {value},")
+            
+    print(f"    'iterations': {real_iterations},  <-- 🌟 这才是真正触发早停的最佳轮数！")
     print("=" * 50)

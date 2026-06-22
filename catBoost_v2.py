@@ -44,6 +44,8 @@ def main():
     
     # 准备特征与目标变量
     y_train_full = train_df['cnt']
+    
+    # 🌟【修复点】：清理掉了冗余的 casual 和 registered
     cols_to_drop = ['cnt', 'ID', 'dteday']
     X_train_full = train_df.drop(columns=[c for c in cols_to_drop if c in train_df.columns])
     X_test = test_df.drop(columns=[c for c in cols_to_drop if c in test_df.columns])
@@ -60,19 +62,28 @@ def main():
     y_train_log = np.log1p(y_train_full)
     
     print("2. 开始使用 100% 全量数据及最优参数训练最终模型 (不再进行早停)...")
+    
     # =========================================================
-    # 填入你 Optuna 跑出来的最优参数
+    # 填入你新跑出来的最优参数
     # =========================================================
+    
+    # 👇 把你在 auto.py 跑出来的带星星的那行 "iterations" 填在这里！
+    # （假设你跑出来发现模型在 800 轮最好，就填 800）
+    real_best_iter = 4000
+    
+    # 因为全量数据比验证时长用的训练数据多了 20%，模型需要多跑几轮才能充分收敛，所以乘以 1.15
+    adjusted_iterations = int(real_best_iter * 1.15) 
+
     final_params = {
-        'iterations': 4954, 
-        'learning_rate': 0.044595999628130135, 
-        'depth': 6, 
-        'l2_leaf_reg': 14, 
-        'subsample': 0.6216313624849373, 
-        'random_strength': 2.783907587857925,
+        'iterations': 4317, # 使用调整后的迭代次数
+        'learning_rate': 0.06959183477601032,
+        'depth': 5,
+        'l2_leaf_reg': 3,
+        'subsample': 0.8835403056611041,
+        'random_strength': 6.585657431809377,
         'loss_function': 'RMSE',
         'random_seed': 42,
-        'verbose': 200
+        'verbose': 100
     }
     
     # 注意：这里直接 fit 全部数据，去掉了 eval_set 和 early_stopping_rounds
